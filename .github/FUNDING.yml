@@ -1,0 +1,3 @@
+# Default funding config for every richardwooding/* repo that has no FUNDING.yml
+# of its own. A repo-level file overrides this outright — there is no merge.
+github: richardwooding
