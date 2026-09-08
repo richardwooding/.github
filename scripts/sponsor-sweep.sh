@@ -26,6 +26,10 @@ URL="https://github.com/sponsors/richardwooding"
 
 for r in "$@"; do
   cd "$ROOT/$r" 2>/dev/null || { echo "MISSING  $r"; continue; }
+  # Repos cloned on another machine have no identity, and git then refuses to
+  # commit. Set it only when absent, so a repo with its own stays untouched.
+  git config user.name  >/dev/null 2>&1 || git config user.name  "Richard Wooding"
+  git config user.email >/dev/null 2>&1 || git config user.email "richard.wooding@gmail.com"
   git switch -q main 2>/dev/null && git pull -q --ff-only 2>/dev/null || true
 
   # Python does the editing: both insertions need to reason about context (the
@@ -109,7 +113,7 @@ PY
   [ "$DRY" = 1 ] && { git checkout -q . 2>/dev/null || true; continue; }
   [ -z "$(git status --porcelain)" ] && continue
 
-  git switch -qc "$BRANCH"
+  git switch -q "$BRANCH" 2>/dev/null || git switch -qc "$BRANCH"
   git add -A
   git commit -q -m "feat: ask for sponsorship, in the two places people read
 
