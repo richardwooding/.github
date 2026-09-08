@@ -1,96 +1,127 @@
 #!/usr/bin/env sh
-# Add the standard "## Sponsor" section to one or more repos, one PR each.
+# Wire sponsorship into a repo: the README section, the gloam footer link, or both.
+# One PR per repo. Idempotent — a repo that already asks is skipped.
 #
 # The Sponsor button comes from this repo's .github/FUNDING.yml and already covers
-# every repository. This script is emphasis, not mechanism: the button sits in the
-# repo sidebar where nobody looks, while a README is what someone reads in the
-# minute after the project turned out to be useful.
+# every repository. This is emphasis, not mechanism: the button sits in the repo
+# sidebar, while a README is what someone reads in the minute after the project
+# turned out to be useful, and a site footer is where a visitor who never opens
+# GitHub can see it at all.
 #
-# Idempotent and re-runnable: a repo that already mentions sponsorship is skipped.
-#
-# Usage: sponsor-sweep.sh <repos-root> <repo> [<repo> ...]
-#        sponsor-sweep.sh --dry-run <repos-root> <repo> [<repo> ...]
+# Usage: sponsor-sweep.sh [--dry-run] [--readme-only|--footer-only] <repos-root> <repo>...
 set -eu
 
-DRY=0
-[ "${1:-}" = "--dry-run" ] && { DRY=1; shift; }
+DRY=0; DO_README=1; DO_FOOTER=1
+while :; do
+  case "${1:-}" in
+    --dry-run)     DRY=1; shift ;;
+    --readme-only) DO_FOOTER=0; shift ;;
+    --footer-only) DO_README=0; shift ;;
+    *) break ;;
+  esac
+done
 ROOT="$1"; shift
-BRANCH="docs/sponsor-section"
-
-# The canonical block, without surrounding blank lines. One place to edit if the
-# ask ever changes.
-block() {
-  printf '## Sponsor\n\n'
-  printf 'If this saves you time, you can [sponsor its maintenance](https://github.com/sponsors/richardwooding).\n'
-  printf 'Sponsorship pays for the unglamorous half — triage, dependency bumps, release plumbing — and is\n'
-  printf 'never a condition of getting help here.\n'
-}
+BRANCH="feat/sponsor"
+URL="https://github.com/sponsors/richardwooding"
 
 for r in "$@"; do
-  cd "$ROOT/$r" || { echo "MISSING  $r"; continue; }
+  cd "$ROOT/$r" 2>/dev/null || { echo "MISSING  $r"; continue; }
+  git switch -q main 2>/dev/null && git pull -q --ff-only 2>/dev/null || true
 
-  if grep -qiE '^##[[:space:]]+Sponsor|sponsors/richardwooding' README.md 2>/dev/null; then
-    echo "SKIP     $r (already asks)"
-    continue
-  fi
+  # Python does the editing: both insertions need to reason about context (the
+  # last License heading, a missing trailing newline, the single gl-fnav block),
+  # which is where a sed one-liner would quietly get it wrong.
+  RESULT=$(DRY="$DRY" DO_README="$DO_README" DO_FOOTER="$DO_FOOTER" URL="$URL" python3 - <<'PY'
+import os, glob, re, sys
 
-  # Insert before the LAST "## License" heading — a couple of READMEs mention
-  # licensing earlier in prose, and the tail one is the real section.
-  ln=$(grep -niE '^##[[:space:]]+Licen[cs]e' README.md | tail -1 | cut -d: -f1 || true)
-  mode=insert
-  if [ -z "$ln" ]; then
-    # No licence heading (powerdown, txtr): append at the very end. NOT "insert
-    # before the last line + 1" — powerdown's README has no trailing newline, so
-    # a line-counted insert lands before its final line, which is a closing code
-    # fence. The section would end up inside the fenced block.
-    if grep -qE '^## ' README.md; then
-      mode=append
-    else
-      echo "REPORT   $r (no H2 at all — handle by hand)"
-      continue
-    fi
-  fi
+dry = os.environ["DRY"] == "1"
+url = os.environ["URL"]
+did = []
 
-  if [ "$DRY" = 1 ]; then
-    if [ "$mode" = append ]; then echo "WOULD    $r → append at EOF (no License heading)"
-    else echo "WOULD    $r → insert before line $ln (## License)"; fi
-    continue
-  fi
+SECTION = f"""## Sponsor
 
-  git switch -q main && git pull -q --ff-only
+If this saves you time, you can [sponsor its maintenance]({url}).
+Sponsorship pays for the unglamorous half — triage, dependency bumps, release plumbing — and is
+never a condition of getting help here.
+"""
+
+HEART = ('<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+         'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+         '<path d="M20.8 4.6a5.5 5.5 0 0 0-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 0 0-7.8 7.8L12 21l8.8-8.6a5.5 5.5 0 0 0 0-7.8z"/></svg>')
+
+def anchor(ind):
+    """The link, indented to sit with its siblings rather than with the closing tag."""
+    return (f'{ind}<a class="gl-sponsor" href="{url}">\n'
+            f'{ind}  {HEART}\n'
+            f'{ind}  Sponsor\n'
+            f'{ind}</a>\n')
+
+# --- README section -------------------------------------------------------
+if os.environ["DO_README"] == "1" and os.path.exists("README.md"):
+    s = open("README.md").read()
+    if re.search(r"(?im)^##\s+sponsor\b", s) or "sponsors/richardwooding" in s:
+        did.append("readme: already asks")
+    else:
+        heads = [m.start() for m in re.finditer(r"(?im)^##\s+licen[cs]e\s*$", s)]
+        if heads:
+            at = heads[-1]
+            s = s[:at] + SECTION + "\n" + s[at:]
+            did.append("readme: before ## License")
+        elif re.search(r"(?m)^## ", s):
+            if not s.endswith("\n"):
+                s += "\n"
+            if s.splitlines()[-1].strip():
+                s += "\n"
+            s += SECTION
+            did.append("readme: appended (no License heading)")
+        else:
+            did.append("readme: SKIPPED (no H2 at all)")
+            s = None
+        if s is not None and not dry:
+            open("README.md", "w").write(s)
+
+# --- gloam footer link ----------------------------------------------------
+if os.environ["DO_FOOTER"] == "1":
+    pages = [p for p in ("docs/index.html", "site/index.html", "web/src/index.html")
+             if os.path.exists(p) and os.path.exists(os.path.join(os.path.dirname(p), "gloam.css"))]
+    for p in pages:
+        h = open(p).read()
+        if "gl-sponsor" in h or "sponsors/richardwooding" in h:
+            did.append(f"{p}: already asks"); continue
+        m = re.search(r'(<nav class="gl-fnav">)(.*?)(\n[ \t]*)(</nav>)', h, re.S)
+        if not m:
+            did.append(f"{p}: SKIPPED (no gl-fnav)"); continue
+        inner, closing = m.group(2), m.group(3) + m.group(4)
+        # Take the indent from the last sibling link, not from the closing tag —
+        # otherwise the anchor lands two columns short of every other entry.
+        sibs = [l for l in inner.splitlines() if l.lstrip().startswith("<a ")]
+        ind = sibs[-1][:len(sibs[-1]) - len(sibs[-1].lstrip())] if sibs else "      "
+        h = h[:m.end(2)] + "\n" + anchor(ind).rstrip("\n") + closing + h[m.end(4):]
+        did.append(f"{p}: footer link")
+        if not dry:
+            open(p, "w").write(h)
+
+print("; ".join(did) if did else "nothing to do")
+PY
+)
+  echo "$r: $RESULT"
+  case "$RESULT" in *"already asks"*|*"nothing to do"*) [ -z "$(git status --porcelain)" ] && continue ;; esac
+  [ "$DRY" = 1 ] && { git checkout -q . 2>/dev/null || true; continue; }
+  [ -z "$(git status --porcelain)" ] && continue
+
   git switch -qc "$BRANCH"
-  if [ "$mode" = append ]; then
-    # A file not ending in a newline would otherwise glue the heading onto its
-    # last line; $( ) strips a trailing newline, so a non-empty result means one
-    # is missing.
-    [ -n "$(tail -c1 README.md)" ] && printf '\n' >> README.md
-    # …and only add a separating blank line if the file does not already end on
-    # one (txtr does), or the section arrives with a double gap above it.
-    [ -n "$(tail -n1 README.md)" ] && printf '\n' >> README.md
-    block >> README.md
-  else
-    { block; printf '\n'; } > /tmp/sponsor-block.$$
-    awk -v n="$ln" -v f=/tmp/sponsor-block.$$ 'NR==n{ while ((getline l < f) > 0) print l } { print }' \
-      README.md > README.md.new && mv README.md.new README.md
-    rm -f /tmp/sponsor-block.$$
-  fi
-
-  git commit -q -am "docs(readme): add a Sponsor section
+  git add -A
+  git commit -q -m "feat: ask for sponsorship, in the two places people read
 
 The .github default FUNDING.yml already puts a Sponsor button on this repo,
-but the button lives in the sidebar where nobody looks. A line next to the
-licence is where someone who has just found the project useful is reading.
+but the button lives in the sidebar where nobody looks. The README section
+sits next to the licence, where someone who has just found this useful is
+already reading; the site footer reaches the visitors who never open GitHub.
 
 Wording is identical across every repo on purpose: one place to change if the
-ask ever changes, and no per-repo pleading."
+ask changes, and no per-repo pleading. The footer link is styled by gloam's
+gl-sponsor class, which arrived with the last asset sync."
   git push -q -u origin "$BRANCH"
-  gh pr create --title "docs(readme): add a Sponsor section" --body "Adds the standard Sponsor section immediately before \`## License\`.
-
-The \`richardwooding/.github\` default \`FUNDING.yml\` already gives this repo a Sponsor button, so this is emphasis rather than mechanism — the button sits in the sidebar, while the README is what someone reads in the minute after the project turned out to be useful.
-
-Wording is byte-identical across the sweep so there is one place to edit if the ask changes. Deliberately no badge: about thirty repos have no badge block at all, and forcing one in for this would look worse than the section reads.
-
-Swept with \`scripts/sponsor-sweep.sh\` in [richardwooding/.github](https://github.com/richardwooding/.github)."
-  echo "OPENED   $r"
-  sleep 5   # GitHub's secondary rate limits bite on bulk content creation
+  gh pr create --title "feat: ask for sponsorship, in the two places people read" --body "$(printf 'The [\`richardwooding/.github\`](https://github.com/richardwooding/.github) default \`FUNDING.yml\` already gives this repo a Sponsor button, so this is emphasis rather than mechanism — the button sits in the sidebar, while the README is what someone reads in the minute after the project turned out to be useful, and the site footer reaches visitors who never open GitHub.\n\nWording is byte-identical across the sweep so there is one place to edit if the ask changes. Deliberately no badge: about thirty repos have no badge block at all, and forcing one in for this would read worse than the section does.\n\nThe footer link uses gloam'"'"'s `.gl-sponsor` class, which landed in the last `chore(site): sync gloam design assets`. gloam ships the style; the anchor is the site'"'"'s own, so an asset sync can never change what a page asks for.\n\nSwept with `scripts/sponsor-sweep.sh` in [richardwooding/.github](https://github.com/richardwooding/.github).')"
+  sleep 4   # GitHub secondary rate limits bite on bulk content creation
 done
