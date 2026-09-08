@@ -20,7 +20,10 @@ while :; do
     *) break ;;
   esac
 done
-ROOT="$1"; shift
+# Resolve once and absolutely: the loop cd's into each repo and never comes back,
+# so a relative root would resolve against the PREVIOUS repo from the second
+# iteration on — and every later repo is then reported MISSING, quietly.
+ROOT=$(cd "$1" && pwd); shift
 BRANCH="feat/sponsor"
 URL="https://github.com/sponsors/richardwooding"
 
